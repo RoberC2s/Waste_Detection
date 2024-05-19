@@ -44,6 +44,12 @@ def calculate_transform_matrix(x_axis, y_axis, z_axis, origin):
     transform_matrix[:3, 3] = inv_translation_vector
     return transform_matrix
 
+def transform_point(point, transform_matrix):
+    point_homogeneous = np.hstack((point, 1))
+    transformed_point_homogeneous = np.dot(transform_matrix, point_homogeneous)
+    transformed_point = transformed_point_homogeneous[:3] / transformed_point_homogeneous[3]
+    return transformed_point
+
 
 def orthogonalize(v1, v2):
     # Gram-Schmidt process
@@ -280,7 +286,7 @@ class ObjectDetection:
         frame = self.box_annotator.annotate(scene=frame, detections=detections, labels=self.labels)
         return frame
 
-    def get_grasp_object(self, image, zed, zed_point_cloud):
+    def get_grasp_object(self, image, zed, zed_point_cloud, tranform_m):
         for result in self.results:
             result.cpu().numpy()
             detected_objects = result.__len__()
@@ -307,23 +313,26 @@ class ObjectDetection:
                     for j in range(-2, 2):
                         for k in range(-2, 2): 
                             point_cloud_value =  zed_point_cloud.get_value(cX + j, cY + k)[1][:3]
+                            zed2aruco_point = transform_point(point_cloud_value, tranform_m)
+                            #print("o ponto em relação ao aruco está em: ", zed2aruco_point)
                             if math.isfinite(point_cloud_value[2]):
-                                x += point_cloud_value[0]
-                                y += point_cloud_value[1]
+                                x += zed2aruco_point[0]
+                                y += zed2aruco_point[1]
                                 depth += point_cloud_value[2]
                                 z = depth
                                 good_points += 1
                     # Check DEPTH
                     if good_points > 0:
-                        depth /= good_points
-                        z /= good_points
+                        #depth /= good_points
+                        #z /= good_points
                         y /= good_points
                         x /= good_points
+                        depth = math.sqrt(x * x + y * y )
                         print("Para a deteção ", i, " tenho a seguinte pointcloud:")
                         print("X: ", x, " Y: ", y, " Z: ", z)
                         obj_depth.append(depth)
                     else:
-                        obj_depth.append(1000)
+                        obj_depth.append(10000)
                     # Check SIZE
                     obj_size.append(cv2.countNonZero(img_mask))
                 
@@ -386,7 +395,7 @@ class ZED:
         # Set configuration parameters
         self.init = sl.InitParameters()
         self.init.camera_resolution = sl.RESOLUTION.HD1080
-        self.init.depth_mode = sl.DEPTH_MODE.PERFORMANCE
+        self.init.depth_mode = sl.DEPTH_MODE.ULTRA
         self.init.coordinate_units = sl.UNIT.MILLIMETER
         self.init.depth_stabilization = 50
 
@@ -454,9 +463,7 @@ if __name__ == "__main__":
             success, frame, frame_x_axis, frame_y_axis, frame_z_axis, center_3d = aruco.ref_estimation(frame, aruco.ARUCO_DICT[aruco.aruco_type])
             if success:
                 transform_M = calculate_transform_matrix(frame_x_axis, frame_y_axis, frame_z_axis, center_3d)
-                #print(transform_M)
-            #detected_objects = detector.detect(frame)
-            #print("AQUIII  ", detected_objects)
+
             results = detector.model.track(frame, persist = True, conf = 0.75)          
             detector.results  = results
             for result in results:
@@ -471,8 +478,8 @@ if __name__ == "__main__":
             #frame = detector.plot_bboxes(detector.results, frame)
             #print("print ", detector.results)
             print("objetos detetados: ", detected_objects)
-            if(detected_objects > 0 ):
-                cX, cY, obj_mask, box, conf = detector.get_grasp_object(frame, zed, zed_point_cloud)
+            if(detected_objects > 0 and success):
+                cX, cY, obj_mask, box, conf = detector.get_grasp_object(frame, zed, zed_point_cloud, transform_M)
 
                 # Highlight the object to grasp in the original image
                 frame = cv2.add(frame, obj_mask)
