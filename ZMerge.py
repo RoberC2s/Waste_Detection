@@ -286,7 +286,7 @@ class ObjectDetection:
         frame = self.box_annotator.annotate(scene=frame, detections=detections, labels=self.labels)
         return frame
 
-    def get_grasp_object(self, image, zed, zed_point_cloud, tranform_m):
+    def get_grasp_object(self, image, zed, zed_point_cloud, tranform_m, depth):
         for result in self.results:
             result.cpu().numpy()
             detected_objects = result.__len__()
@@ -305,17 +305,23 @@ class ObjectDetection:
                     M = cv2.moments(mask_pixels)
                     cX = int(M["m10"] / M["m00"])
                     cY = int(M["m01"] / M["m00"])  
+
+                    cv2.circle(image, (cX, cY), 5, (255, 0, 0), 5)
                     # Calculate object mean surface point XYZ
                     depth = 0
                     x = 0
                     y = 0
                     z = 0
+                    print("PEGA AS CORDENADAS, cX: ", cX, "  cY: ", cY)
                     for j in range(-2, 2):
                         for k in range(-2, 2): 
+                            depth_map_value = depth_image.get_value(cX + j, cY + k)
                             point_cloud_value =  zed_point_cloud.get_value(cX + j, cY + k)[1][:3]
                             zed2aruco_point = transform_point(point_cloud_value, tranform_m)
                             #print("o ponto em relação ao aruco está em: ", zed2aruco_point)
                             if math.isfinite(point_cloud_value[2]):
+                                depth_map_value = depth_image.get_value(cX + j, cY + k)
+                                print("comparing ", point_cloud_value[2], " com " , depth_map_value[1])
                                 x += zed2aruco_point[0]
                                 y += zed2aruco_point[1]
                                 depth += point_cloud_value[2]
@@ -324,7 +330,7 @@ class ObjectDetection:
                     # Check DEPTH
                     if good_points > 0:
                         #depth /= good_points
-                        #z /= good_points
+                        z /= good_points
                         y /= good_points
                         x /= good_points
                         depth = math.sqrt(x * x + y * y )
@@ -356,7 +362,7 @@ class ObjectDetection:
                 cX = int(M["m10"] / M["m00"])
                 cY = int(M["m01"] / M["m00"])   
                 # Draw centroid
-                cv2.circle(image, (cX, cY), 5, (255, 0, 0), 5)
+                cv2.circle(image, (cX, cY), 5, (0, 255, 0), 5)
 
                 # Find best fit rectangle
                 rect = cv2.minAreaRect(mask_pixels)
@@ -394,10 +400,11 @@ class ZED:
 
         # Set configuration parameters
         self.init = sl.InitParameters()
-        self.init.camera_resolution = sl.RESOLUTION.HD1080
+
         self.init.depth_mode = sl.DEPTH_MODE.ULTRA
-        self.init.coordinate_units = sl.UNIT.MILLIMETER
-        self.init.depth_stabilization = 50
+        self.init.camera_resolution = sl.RESOLUTION.HD1080
+        self.init.coordinate_units = sl.UNIT.METER
+        #self.init.depth_stabilization = 50
 
         self.status = self.zed.open(self.init)
 
@@ -409,11 +416,12 @@ class ZED:
     def close(self):
         self.zed.close()
 
-    def capture(self, zed_image: sl.Mat, point_cloud: sl.Mat, normal_map: sl.Mat):
+    def capture(self, zed_image: sl.Mat, point_cloud: sl.Mat, normal_map: sl.Mat, depth_image: sl.Mat):
         if(self.zed.grab(self.runtime) == sl.ERROR_CODE.SUCCESS):
             self.zed.retrieve_image(zed_image, sl.VIEW.LEFT, sl.MEM.CPU, image_size)
             self.zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
             self.zed.retrieve_measure(normal_map, sl.MEASURE.NORMALS)
+            self.zed.retrieve_measure(depth_image, sl.MEASURE.DEPTH)
             return True
         else:
             print("Error in image acquisition")
@@ -440,12 +448,13 @@ if __name__ == "__main__":
 
         # Prepare new image size to retrieve half-resolution images
     image_size = zed.zed.get_camera_information().camera_configuration.resolution
-    image_size.width = image_size.width / 2
-    image_size.height = image_size.height / 2
+    image_size.width = image_size.width #/ 2
+    image_size.height = image_size.height #/ 2
 
     image_zed = sl.Mat(image_size.width, image_size.height, sl.MAT_TYPE.U8_C4)  
     zed_point_cloud = sl.Mat()
     zed_normal_map = sl.Mat()
+    depth_image = sl.Mat()
 
 
 
@@ -454,7 +463,7 @@ if __name__ == "__main__":
         start_time = time()
         
     
-        if zed.capture(image_zed, zed_point_cloud, zed_normal_map):
+        if zed.capture(image_zed, zed_point_cloud, zed_normal_map, depth_image) :
  
 
             
@@ -479,7 +488,7 @@ if __name__ == "__main__":
             #print("print ", detector.results)
             print("objetos detetados: ", detected_objects)
             if(detected_objects > 0 and success):
-                cX, cY, obj_mask, box, conf = detector.get_grasp_object(frame, zed, zed_point_cloud, transform_M)
+                cX, cY, obj_mask, box, conf = detector.get_grasp_object(frame, zed, zed_point_cloud, transform_M, depth_image)
 
                 # Highlight the object to grasp in the original image
                 frame = cv2.add(frame, obj_mask)
