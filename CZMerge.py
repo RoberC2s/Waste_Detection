@@ -8,6 +8,7 @@ import argparse
 import math
 import random
 from publisher import Publisher
+from publisher import get_object_data
 import pyzed.sl as sl
 
 from time import sleep
@@ -16,27 +17,14 @@ from supervision import Detections, BoxAnnotator
 
 
 ##Test function 
-def get_object_data():
-    # In a real application, replace this with actual detection logic
-    return [
-        {
-            "object": "example_object_1",
-            "coordinates": {
-                "x": 100,
-                "y": 200,
-                "z": 300
-            }
-        },
-        {
-            "object": "example_object_2",
-            "coordinates": {
-                "x": 400,
-                "y": 500,
-                "z": 600
-            }
-        }
-    ]
-
+def object_data2pub(objects, pub):
+    print("É suposto publicar ", len(objects), "mensanges")
+    print(objects)
+    for i in range(len(objects)):
+        message = objects[i].to_dict()
+        pub.publish(message)
+    #pub.publish(objects)
+    return True
 
 def XYZaxis_from_OXY(frame_origin_3d, frame_x_axis_3d, frame_y_axis_3d):
     # Calculate frame XYZ axis
@@ -77,7 +65,7 @@ def transform_point(point, transform_matrix):
 def orthogonalize(v1, v2):
     # Gram-Schmidt process
     u1 = v1
-    u2 = v2 - np.dot(v2, u1) / np.dot(u1, u1) * u1
+    u2 = -v2 + np.dot(v2, u1) / np.dot(u1, u1) * u1
     return u1, u2
 
 def normalize_vector(v):
@@ -186,26 +174,18 @@ class ArUco:
             marker_centers[2][0] = int(np.mean(corners[frame_y_index][0,:,0]))
             marker_centers[2][1] = int(np.mean(corners[frame_y_index][0,:,1]))
 
-            vx_2d = marker_centers[0] - marker_centers[1]
-            vy_2d = marker_centers[2] - marker_centers[1]
-            orthogonalize(vx_2d, vy_2d)
+            vx_2d = marker_centers[1] - marker_centers[0]
+            vy_2d = marker_centers[1]- marker_centers[2]
             point1_x_axis = zed_point_cloud.get_value(int(marker_centers[0][0]), int(marker_centers[0][1]))[1][:3]
             point2_x_axis = zed_point_cloud.get_value(int(marker_centers[1][0]), int(marker_centers[1][1]))[1][:3]
             point_y_axis = zed_point_cloud.get_value(int(marker_centers[2][0]), int(marker_centers[2][1]))[1][:3]
 
 
             vx_2d, vy_2d = orthogonalize(vx_2d, vy_2d)  # Ensure v1 and v2 are orthogonal
-            
-            print("Marker centers : ", marker_centers)
             # Compute the center of the reference frame
             mk_ctr = [0,0]
-            print("vou dividir = ", vx_2d[1], " por ", vx_2d[0])
             m1 = vx_2d[1] / vx_2d[0] if vx_2d[0] != 0 else 100000
-            print("m1,  ", m1)
-
-            print("vou dividir = ", vy_2d[1], " por ", vy_2d[0])
             m2 = vy_2d[1] / vy_2d[0] if vy_2d[0] != 0 else 100000
-            print("m2,  ", m2)
 
             b1 = marker_centers[0][1] - m1 * marker_centers[0][0]
             b2 = marker_centers[2][1] - m2 * marker_centers[2][0]
@@ -214,7 +194,7 @@ class ArUco:
             print(mk_ctr)
             center_3d = zed_point_cloud.get_value(int(mk_ctr[0]), int(mk_ctr[1]))[1][:3]
 
-            frame_x_axis, frame_y_axis, frame_z_axis =  XYZaxis_from_OXY(center_3d, point2_x_axis, point_y_axis)
+            frame_x_axis, frame_y_axis, frame_z_axis =  XYZaxis_from_OXY(center_3d, point1_x_axis, point_y_axis)
             normal_vector_2d = np.cross(vx_2d, vy_2d)
             normal_vector_2d = normalize_vector(normal_vector_2d)
             vx_2d = normalize_vector(vx_2d)
@@ -223,10 +203,6 @@ class ArUco:
 
             # Draw reference frame
             length = 50
-            print("O numero é: ", np.round(mk_ctr ).astype(int))
-
-            print("O X 2D: " , vx_2d)
-            print("O X 3D: " , frame_x_axis[:2])
             end_point_x = tuple(np.round(mk_ctr + length * vx_2d).astype(int))
             end_point_y = tuple(np.round(mk_ctr + length * vy_2d).astype(int))
             #end_point_z = tuple(np.round(mk_ctr + length * normal_vector_2d).astype(int))
@@ -238,6 +214,30 @@ class ArUco:
         # Draw detected markers
 
         return True, frame,frame_x_axis, frame_y_axis, frame_z_axis, center_3d
+
+
+class Object:
+    def __init__(self, x, y, z, confidence, class_id, tracker_id=None):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.confidence = confidence
+        self.class_id = class_id
+        self.tracker_id = tracker_id
+
+    def to_dict(self):
+        return [{
+            "x": self.x,
+            "y": self.y,
+            "z": self.z,
+            "confidence": self.confidence,
+            "class_id": self.class_id,
+            "tracker_id": self.tracker_id
+        }]
+    
+    def __repr__(self):
+        return f"Object(x={self.x}, y={self.y}, z={self.z}, confidence={self.confidence}, class_id={self.class_id}, tracker_id={self.tracker_id})"
+
 
 class ObjectDetection:
 
@@ -262,18 +262,61 @@ class ObjectDetection:
         model.fuse()
         return model
 
-    def detect(self, frame):
-        self.results = self.model.predict(frame, conf=0.75, device='cuda')
-        # Analyse results from YOLOv8
+    def detect(self, frame, point_cloud, tranform_matrix):
+        self.results = self.model.track(frame, persist = True, conf = 0.75)
+        detected_objects = []
         for result in self.results:
             result.cpu().numpy()
-            detected_objects = result.__len__()
-            if detected_objects == 0:
+            num_detected_objects = result.__len__()
+            if num_detected_objects == 0:
                 print('WARNING: No objects detected!')
-                return 0
-                
-        print('INFO: {} objects detected!'.format(detected_objects))
+  
+            grasp_obj_index = 0
+            if num_detected_objects > 0:
+                obj_size = []
+                obj_depth = []
+                # Check for closest object
+                for i in range(num_detected_objects):
+                    print("ENTREI NO RESULT", i)
+                    good_points = 0
+                    # Get object centroid
+                    mask_pixels = np.array(result.masks.xy[i], dtype=np.int32)
+                    img_mask = np.zeros_like(frame, dtype=np.uint8)
+                    cv2.fillPoly(img_mask, [mask_pixels], 255)
+                    img_mask = cv2.cvtColor(img_mask, cv2.COLOR_BGR2GRAY)
+                    M = cv2.moments(mask_pixels)
+                    cX = int(M["m10"] / M["m00"])
+                    cY = int(M["m01"] / M["m00"])
+
+                    cv2.circle(frame, (cX, cY), 4, (0, 0, 255), -1)
+                    # Calculate object mean surface point XYZ
+                    depth = 0
+                    z = 0
+                    for j in range(-2, 2):
+                        for k in range(-2, 2): 
+                            point_cloud_value =  point_cloud.get_value(cX + j, cY + k)[1][:3]
+                            zed2aruco_point = transform_point(point_cloud_value, tranform_matrix)
+                            #print("o ponto em relação ao aruco está em: ", zed2aruco_point)
+                            if math.isfinite(point_cloud_value[2]):
+                                depth += zed2aruco_point[2]
+                                z = depth
+                                good_points += 1
+                    # Check DEPTH
+                    if good_points > 0:
+                        depth /= good_points
+                        z /= good_points
+                        obj_depth.append(depth)
+                    else:
+                        z = 100000
+                        obj_depth.append(10000)
+                    
+                    # Extract bounding box and other attributes here
+                    confidence = result.boxes.conf[i].item() if result.boxes.conf[i].item() is not None else None
+                    class_id = int(result.boxes.cls[i].item()) if result.boxes.cls[i].item()is not None else None
+                    tracker_id = result.boxes.id[i].item() if result.boxes.id[i].item() is not None else None
+                    detected_objects.append(Object(zed2aruco_point[0], zed2aruco_point[1], z, confidence, class_id, tracker_id))
         return detected_objects
+    
     
 
 
@@ -290,9 +333,9 @@ class ObjectDetection:
         # Setup detections for visualization
         detections = Detections( 
                     #x1 y1 x2 y2
-                    xyxy=results[0].boxes.xyxy.cpu().numpy(),
-                    confidence=results[0].boxes.conf.cpu().numpy(),
-                    class_id=results[0].boxes.cls.cpu().numpy().astype(int),
+                    xyxy=results.boxes.xyxy.cpu().numpy(),
+                    confidence=results.boxes.conf.cpu().numpy(),
+                    class_id=results.boxes.cls.cpu().numpy().astype(int),
                     )
 
 
@@ -328,8 +371,6 @@ class ObjectDetection:
                     M = cv2.moments(mask_pixels)
                     cX = int(M["m10"] / M["m00"])
                     cY = int(M["m01"] / M["m00"])  
-
-                    cv2.circle(image, (cX, cY), 5, (255, 0, 0), 5)
                     # Calculate object mean surface point XYZ
                     depth = 0
                     x = 0
@@ -421,8 +462,8 @@ class ZED:
         self.init = sl.InitParameters()
 
         self.init.depth_mode = sl.DEPTH_MODE.ULTRA
-        self.init.camera_resolution = sl.RESOLUTION.VGA
-        self.init.coordinate_units = sl.UNIT.METER
+        self.init.camera_resolution = sl.RESOLUTION.HD720
+        self.init.coordinate_units = sl.UNIT.CENTIMETER
         #self.init.depth_stabilization = 50
 
         self.status = self.zed.open(self.init)
@@ -468,12 +509,12 @@ if __name__ == "__main__":
         # Prepare new image size to retrieve half-resolution images
     image_size = zed.zed.get_camera_information().camera_configuration.resolution
     image_size.width = image_size.width #/ 2
-    image_size.height = image_size.height #/ 2
+    image_size.height = image_size.height # / 2
 
-    image_zed = sl.Mat(image_size.width, image_size.height, sl.MAT_TYPE.U8_C4)  
-    zed_point_cloud = sl.Mat()
+    image_zed = sl.Mat(image_size.width, image_size.height)  
+    zed_point_cloud = sl.Mat(image_size.width, image_size.height)
     zed_normal_map = sl.Mat()
-    depth_image = sl.Mat()
+    depth_image = sl.Mat(image_size.width, image_size.height)
 
     broker = 'broker.hivemq.com'  # Public broker for demonstration
     port = 1883
@@ -488,36 +529,32 @@ if __name__ == "__main__":
     
         if zed.capture(image_zed, zed_point_cloud, zed_normal_map, depth_image) :
 
-            objetect_data = get_object_data()
- 
-
-            
             # Retrieve the left image
             frame = cv2.cvtColor(image_zed.get_data(), cv2.COLOR_RGBA2RGB)
             success, frame, frame_x_axis, frame_y_axis, frame_z_axis, center_3d = aruco.ref_estimation(frame, aruco.ARUCO_DICT[aruco.aruco_type])
             if success:
                 transform_M = calculate_transform_matrix(frame_x_axis, frame_y_axis, frame_z_axis, center_3d)
 
-            results = detector.model.track(frame, persist = True, conf = 0.75)          
-            detector.results  = results
-            for result in results:
-                result.cpu().numpy()
-                detected_objects = result.__len__()
-                if detected_objects == 0:
-                    print('WARNING: No objects detected!')
-                    
-      
+                #results = detector.model.track(frame, persist = True, conf = 0.75)      
+                objects = detector.detect(frame, zed_point_cloud, transform_M)
+                #detector.results  = results
+                '''
+                for result in results:
+                    result.cpu().numpy()
+                    detected_objects = result.__len__()
+                    if detected_objects == 0:
+                        print('WARNING: No objects detected!')
+                '''
+                detected_objects = len(objects)
 
-            frame = detector.results[0].plot()
-            #frame = detector.plot_bboxes(detector.results, frame)
-            #print("print ", detector.results)
-            print("objetos detetados: ", detected_objects)
-            if(detected_objects > 0 and success):
-                cX, cY, obj_mask, box, conf = detector.get_grasp_object(frame, zed, zed_point_cloud, transform_M)
+                frame = detector.results[0].plot()
+                print("objetos detetados: ", detected_objects)
+                #if(detected_objects > 0 and success):
+                    #cX, cY, obj_mask, box, conf = detector.get_grasp_object(frame, zed, zed_point_cloud, transform_M)
 
-                # Highlight the object to grasp in the original image
-                frame = cv2.add(frame, obj_mask)
-           
+                    # Highlight the object to grasp in the original image
+                    #frame = cv2.add(frame, obj_mask)
+            
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
@@ -527,7 +564,7 @@ if __name__ == "__main__":
             cv2.putText(frame, f'FPS: {int(fps)}', (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
 
             cv2.imshow('YOLOv8 Detection', frame)
-            pub.publish(objetect_data)
+            object_data = object_data2pub(objects, pub)
         else:
             break
 
