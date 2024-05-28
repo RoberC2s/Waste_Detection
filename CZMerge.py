@@ -10,6 +10,7 @@ import random
 from publisher import Publisher
 from publisher import get_object_data
 import pyzed.sl as sl
+from collections import defaultdict
 
 from time import sleep
 from supervision.draw.color import ColorPalette
@@ -65,7 +66,7 @@ def transform_point(point, transform_matrix):
 def orthogonalize(v1, v2):
     # Gram-Schmidt process
     u1 = v1
-    u2 = -v2 + np.dot(v2, u1) / np.dot(u1, u1) * u1
+    u2 = v2 - np.dot(v2, u1) / np.dot(u1, u1) * u1
     return u1, u2
 
 def normalize_vector(v):
@@ -175,7 +176,7 @@ class ArUco:
             marker_centers[2][1] = int(np.mean(corners[frame_y_index][0,:,1]))
 
             vx_2d = marker_centers[1] - marker_centers[0]
-            vy_2d = marker_centers[1]- marker_centers[2]
+            vy_2d = marker_centers[2]- marker_centers[0]
             point1_x_axis = zed_point_cloud.get_value(int(marker_centers[0][0]), int(marker_centers[0][1]))[1][:3]
             point2_x_axis = zed_point_cloud.get_value(int(marker_centers[1][0]), int(marker_centers[1][1]))[1][:3]
             point_y_axis = zed_point_cloud.get_value(int(marker_centers[2][0]), int(marker_centers[2][1]))[1][:3]
@@ -218,9 +219,12 @@ class ArUco:
 
 class Object:
     def __init__(self, x, y, z, confidence, class_id, tracker_id=None):
-        self.x = x
-        self.y = y
-        self.z = z
+        #x_list = []
+        self.x = x#_list.append(x)
+        y_list = []
+        self.y = y#_list.append(y)
+        z_list = []
+        self.z = z#_list.append(z)
         self.confidence = confidence
         self.class_id = class_id
         self.tracker_id = tracker_id
@@ -262,8 +266,29 @@ class ObjectDetection:
         model.fuse()
         return model
 
-    def detect(self, frame, point_cloud, tranform_matrix):
+    def detect(self, frame, point_cloud, tranform_matrix, track_history):
+
         self.results = self.model.track(frame, persist = True, conf = 0.75)
+        # Get the boxes and track IDs
+
+        # Store the track history
+        boxes = self.results[0].boxes.xywh.cpu()
+        track_ids = self.results[0].boxes.id.int().cpu().tolist()
+
+        
+        # Plot the tracks
+        for box, track_id in zip(boxes, track_ids):
+            x, y, w, h = box
+            #point_cloud_value =  point_cloud.get_value(x, y)[1][:3]
+            #zed2aruco_point = transform_point(point_cloud_value, tranform_matrix)
+            track = track_history[track_id]
+            track.append((float(x),float(y)))  # x, y center point
+            if len(track) > 30:  # retain 90 tracks for 90 frames
+                track.pop(0)
+            # Draw the tracking lines
+            points = np.hstack(track).astype(np.int32).reshape((-1, 1, 2))
+            cv2.polylines(frame, [points], isClosed=False, color=(0, 0, 255), thickness=10)
+
         detected_objects = []
         for result in self.results:
             result.cpu().numpy()
@@ -277,7 +302,6 @@ class ObjectDetection:
                 obj_depth = []
                 # Check for closest object
                 for i in range(num_detected_objects):
-                    print("ENTREI NO RESULT", i)
                     good_points = 0
                     # Get object centroid
                     mask_pixels = np.array(result.masks.xy[i], dtype=np.int32)
@@ -299,6 +323,7 @@ class ObjectDetection:
                             #print("o ponto em relação ao aruco está em: ", zed2aruco_point)
                             if math.isfinite(point_cloud_value[2]):
                                 depth += zed2aruco_point[2]
+
                                 z = depth
                                 good_points += 1
                     # Check DEPTH
@@ -505,7 +530,8 @@ if __name__ == "__main__":
     detector = ObjectDetection(capture_index=args.webcam_index)
     aruco = ArUco()
     zed = ZED()    
-
+    
+    track_history = defaultdict(lambda: [])
         # Prepare new image size to retrieve half-resolution images
     image_size = zed.zed.get_camera_information().camera_configuration.resolution
     image_size.width = image_size.width #/ 2
@@ -536,7 +562,7 @@ if __name__ == "__main__":
                 transform_M = calculate_transform_matrix(frame_x_axis, frame_y_axis, frame_z_axis, center_3d)
 
                 #results = detector.model.track(frame, persist = True, conf = 0.75)      
-                objects = detector.detect(frame, zed_point_cloud, transform_M)
+                objects = detector.detect(frame, zed_point_cloud, transform_M, track_history)
                 #detector.results  = results
                 '''
                 for result in results:
@@ -554,7 +580,8 @@ if __name__ == "__main__":
 
                     # Highlight the object to grasp in the original image
                     #frame = cv2.add(frame, obj_mask)
-            
+
+                print("Neste momento o track é:", track_history)
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
@@ -564,7 +591,8 @@ if __name__ == "__main__":
             cv2.putText(frame, f'FPS: {int(fps)}', (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
 
             cv2.imshow('YOLOv8 Detection', frame)
-            object_data = object_data2pub(objects, pub)
+            if success:
+                object_data = object_data2pub(objects, pub) 
         else:
             break
 
