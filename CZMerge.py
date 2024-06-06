@@ -8,8 +8,8 @@ import argparse
 import math
 import random
 from publisher import Publisher
-from publisher import get_object_data
 import pyzed.sl as sl
+from scipy.signal import savgol_filter
 from collections import defaultdict
 
 from time import sleep
@@ -26,6 +26,9 @@ def object_data2pub(objects, pub):
         pub.publish(message)
     #pub.publish(objects)
     return True
+
+def round_vector(vector, decimals=1):
+    return [round(num, decimals) for num in vector]
 
 def XYZaxis_from_OXY(frame_origin_3d, frame_x_axis_3d, frame_y_axis_3d):
     # Calculate frame XYZ axis
@@ -83,6 +86,11 @@ def parse_arguments() -> argparse.Namespace:
     args = parser.parse_args()
     return args
 
+def update_speed(detected_objects, tracker_id, new_speed_x, new_speed_y):
+    for obj in detected_objects:
+        if obj.tracker_id == tracker_id:
+            obj.speed_x = new_speed_x
+            obj.speed_y = new_speed_y
 
 
 class ArUco:
@@ -195,7 +203,7 @@ class ArUco:
             print(mk_ctr)
             center_3d = zed_point_cloud.get_value(int(mk_ctr[0]), int(mk_ctr[1]))[1][:3]
 
-            frame_x_axis, frame_y_axis, frame_z_axis =  XYZaxis_from_OXY(center_3d, point1_x_axis, point_y_axis)
+            frame_x_axis, frame_y_axis, frame_z_axis =  XYZaxis_from_OXY(center_3d, point2_x_axis, point_y_axis)
             normal_vector_2d = np.cross(vx_2d, vy_2d)
             normal_vector_2d = normalize_vector(normal_vector_2d)
             vx_2d = normalize_vector(vx_2d)
@@ -228,6 +236,8 @@ class Object:
         self.confidence = confidence
         self.class_id = class_id
         self.tracker_id = tracker_id
+        self.speed_x = None
+        self.speed_y = None
 
     def to_dict(self):
         return [{
@@ -236,11 +246,13 @@ class Object:
             "z": self.z,
             "confidence": self.confidence,
             "class_id": self.class_id,
-            "tracker_id": self.tracker_id
+            "tracker_id": self.tracker_id,
+            "speed_x": self.speed_x,
+            "speed_y": self.speed_y
         }]
     
     def __repr__(self):
-        return f"Object(x={self.x}, y={self.y}, z={self.z}, confidence={self.confidence}, class_id={self.class_id}, tracker_id={self.tracker_id})"
+        return f"Object(x={self.x}, y={self.y}, z={self.z}, confidence={self.confidence}, class_id={self.class_id}, tracker_id={self.tracker_id}, speed_x={self.speed_x}, speed_y={self.speed_y})"
 
 
 class ObjectDetection:
@@ -266,28 +278,10 @@ class ObjectDetection:
         model.fuse()
         return model
 
-    def detect(self, frame, point_cloud, tranform_matrix, track_history):
+    def detect(self, frame, point_cloud, tranform_matrix, track_history, track_history_pixels):
 
         self.results = self.model.track(frame, persist = True, conf = 0.75)
         # Get the boxes and track IDs
-
-        # Store the track history
-        boxes = self.results[0].boxes.xywh.cpu()
-        track_ids = self.results[0].boxes.id.int().cpu().tolist()
-
-        
-        # Plot the tracks
-        for box, track_id in zip(boxes, track_ids):
-            x, y, w, h = box
-            #point_cloud_value =  point_cloud.get_value(x, y)[1][:3]
-            #zed2aruco_point = transform_point(point_cloud_value, tranform_matrix)
-            track = track_history[track_id]
-            track.append((float(x),float(y)))  # x, y center point
-            if len(track) > 30:  # retain 90 tracks for 90 frames
-                track.pop(0)
-            # Draw the tracking lines
-            points = np.hstack(track).astype(np.int32).reshape((-1, 1, 2))
-            cv2.polylines(frame, [points], isClosed=False, color=(0, 0, 255), thickness=10)
 
         detected_objects = []
         for result in self.results:
@@ -311,24 +305,29 @@ class ObjectDetection:
                     M = cv2.moments(mask_pixels)
                     cX = int(M["m10"] / M["m00"])
                     cY = int(M["m01"] / M["m00"])
-
                     cv2.circle(frame, (cX, cY), 4, (0, 0, 255), -1)
                     # Calculate object mean surface point XYZ
                     depth = 0
+                    x = 0
+                    y = 0
                     z = 0
                     for j in range(-2, 2):
                         for k in range(-2, 2): 
                             point_cloud_value =  point_cloud.get_value(cX + j, cY + k)[1][:3]
                             zed2aruco_point = transform_point(point_cloud_value, tranform_matrix)
+
                             #print("o ponto em relação ao aruco está em: ", zed2aruco_point)
                             if math.isfinite(point_cloud_value[2]):
-                                depth += zed2aruco_point[2]
-
-                                z = depth
+                                depth += point_cloud_value[2]
+                                x += zed2aruco_point[0]
+                                y += zed2aruco_point[1]
+                                z += zed2aruco_point[2]
                                 good_points += 1
                     # Check DEPTH
                     if good_points > 0:
                         depth /= good_points
+                        x /= good_points
+                        y /= good_points
                         z /= good_points
                         obj_depth.append(depth)
                     else:
@@ -337,9 +336,25 @@ class ObjectDetection:
                     
                     # Extract bounding box and other attributes here
                     confidence = result.boxes.conf[i].item() if result.boxes.conf[i].item() is not None else None
-                    class_id = int(result.boxes.cls[i].item()) if result.boxes.cls[i].item()is not None else None
-                    tracker_id = result.boxes.id[i].item() if result.boxes.id[i].item() is not None else None
-                    detected_objects.append(Object(zed2aruco_point[0], zed2aruco_point[1], z, confidence, class_id, tracker_id))
+                    class_id = int(result.boxes.cls[i].item()) if result.boxes.cls[i].item()is not None else None# Ensure result.boxes.id is not None and contains the index i
+                    if result.boxes.id is not None and result.boxes.id[i] is not None:
+                        tracker_id = result.boxes.id[i].item()
+                    else:
+                            tracker_id = None
+
+                    if tracker_id is not None:
+                        track = track_history[tracker_id]
+                        track.append((x, y, z))
+                        track_pixels = track_history_pixels[tracker_id]
+                        track_pixels.append((float(cX),float(cY)))  # x, y center point pixels
+                        if len(track_pixels) > 30:  # retain 90 tracks for 90 frames
+                            track_pixels.pop(0)
+                        if len(track) > 30:  # retain 90 tracks for 90 frames
+                            track.pop(0)
+                        points = np.array(track_pixels)[:, :2].astype(np.int32).reshape((-1, 1, 2))       
+                        for i in range(1, len(points)):
+                            cv2.line(frame, tuple(points[i - 1][0]), tuple(points[i][0]), (0, 255, 0), 2)   
+                        detected_objects.append(Object(x, y, z, confidence, class_id, tracker_id))
         return detected_objects
     
     
@@ -417,11 +432,6 @@ class ObjectDetection:
                         #depth /= good_points
                         z /= good_points
                         y /= good_points
-                        x /= good_points
-                        depth = math.sqrt(x * x + y * y )
-                        print("Para a deteção ", i, " tenho a seguinte pointcloud:")
-                        print("X: ", x, " Y: ", y, " Z: ", z)
-                        obj_depth.append(depth)
                     else:
                         obj_depth.append(10000)
                     # Check SIZE
@@ -532,6 +542,7 @@ if __name__ == "__main__":
     zed = ZED()    
     
     track_history = defaultdict(lambda: [])
+    track_history_pixels = defaultdict(lambda: [])
         # Prepare new image size to retrieve half-resolution images
     image_size = zed.zed.get_camera_information().camera_configuration.resolution
     image_size.width = image_size.width #/ 2
@@ -562,7 +573,7 @@ if __name__ == "__main__":
                 transform_M = calculate_transform_matrix(frame_x_axis, frame_y_axis, frame_z_axis, center_3d)
 
                 #results = detector.model.track(frame, persist = True, conf = 0.75)      
-                objects = detector.detect(frame, zed_point_cloud, transform_M, track_history)
+                objects = detector.detect(frame, zed_point_cloud, transform_M, track_history, track_history_pixels)
                 #detector.results  = results
                 '''
                 for result in results:
@@ -580,19 +591,49 @@ if __name__ == "__main__":
 
                     # Highlight the object to grasp in the original image
                     #frame = cv2.add(frame, obj_mask)
-
-                print("Neste momento o track é:", track_history)
+                
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
             end_time = time()
             fps = 1 / np.round(end_time - start_time, 3)
+            if success:
+                pos_x = []
+                pos_y = []
+                speed_dict = defaultdict(lambda: {'speed_x': [], 'speed_y': []})
+                for key, points in track_history.items():
+                    if(len(points) < 15):                            #The amount of lectures used to calculate the speed,
+                        break                                       #and after the average speed
+                    i = 0
+                    last_points = points[-15:]
+                    for point in last_points:
+                        
+                        pos_x.append(np.round(point[0], 2))
+                        pos_y.append(np.round(point[1], 2))
+                        i += 1
+                        if i > 15: break
+                    
+                    smoothed_positions_x = savgol_filter(pos_x, window_length=15, polyorder=3)
+
+                    smoothed_positions_x = round_vector(smoothed_positions_x, decimals=2)
+                    #smoothed_positions_y = savgol_filter(pos_y, window_length=5, polyorder=2)
+                    # Calculate velocities using the smoothed positions
+                    print("pos -> ", pos_x)
+                    print("smooth_pos ->", smoothed_positions_x)
+                    velocities_x = np.diff(pos_x) * fps         #To pass to meter/second
+                    velocities_x_smooth = np.diff(smoothed_positions_x) * fps
+                    print("smooth vel", velocities_x_smooth)
+                    print("velocities", velocities_x )
+                    velocities_y = np.diff(pos_y) * fps
+                    update_speed(objects, key, np.round(velocities_x[-1],3), round((velocities_y[-1]),3))
+                print(speed_dict)
+                object_data = object_data2pub(objects, pub) 
 
             cv2.putText(frame, f'FPS: {int(fps)}', (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
 
             cv2.imshow('YOLOv8 Detection', frame)
-            if success:
-                object_data = object_data2pub(objects, pub) 
+            
+                
         else:
             break
 
