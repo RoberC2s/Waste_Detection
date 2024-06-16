@@ -95,10 +95,10 @@ def update_speed(detected_objects, tracker_id, new_speed_x, new_speed_y, new_spe
             obj.speed_z = new_speed_z
             break
 
-def update_point(detected_objects, tracker_id, new_x, new_y, new_z):
+def update_point(detected_objects, tracker_id, new_key, new_x, new_y, new_z):
     for obj in detected_objects:
         if obj.tracker_id == tracker_id:
-            obj.tracker_id = obj.tracker_id + 0.5
+            obj.tracker_id = new_key
             obj.x = new_x
             obj.y = new_y
             obj.z = new_z
@@ -300,7 +300,11 @@ class ObjectDetection:
         # Get the boxes and track IDs
 
         detected_objects = []
-        detected_objects_to_fitler = []
+        detected_objects_to_fitler01 = []
+
+        detected_objects_to_fitler02 = []
+
+        detected_objects_to_fitler03 = []
         for result in self.results:
             result.cpu().numpy()
             num_detected_objects = result.__len__()
@@ -373,8 +377,12 @@ class ObjectDetection:
                             cv2.line(frame, tuple(points[i - 1][0]), tuple(points[i][0]), (0, 255, 0), 2)   
                         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
                         detected_objects.append(Object(x, y, z, confidence, class_id, tracker_id, timestamp))
-                        detected_objects_to_fitler.append(Object(x, y, z, confidence, class_id, tracker_id, timestamp))
-        return detected_objects, detected_objects_to_fitler
+                        detected_objects_to_fitler01.append(Object(x, y, z, confidence, class_id, tracker_id, timestamp))
+
+                        detected_objects_to_fitler02.append(Object(x, y, z, confidence, class_id, tracker_id, timestamp))
+
+                        detected_objects_to_fitler03.append(Object(x, y, z, confidence, class_id, tracker_id, timestamp))
+        return detected_objects, detected_objects_to_fitler01, detected_objects_to_fitler02, detected_objects_to_fitler03
     
     
 
@@ -592,7 +600,7 @@ if __name__ == "__main__":
                 transform_M = calculate_transform_matrix(frame_x_axis, frame_y_axis, frame_z_axis, center_3d)
 
                 #results = detector.model.track(frame, persist = True, conf = 0.75)      
-                objects, objects_filtered = detector.detect(frame, zed_point_cloud, transform_M, track_history, track_history_pixels)
+                objects, objects_01, objects_02, objects_03 = detector.detect(frame, zed_point_cloud, transform_M, track_history, track_history_pixels)
                 #detector.results  = results
                 '''
                 for result in results:
@@ -641,35 +649,73 @@ if __name__ == "__main__":
                         i += 1
                         if i > 15 or i > (len(points) - 1): break
                     
-
+                    #No filter
                     pos_x = round_vector(pos_x, decimals=1)
                     pos_y = round_vector(pos_y, decimals=1)
                     pos_z = round_vector(pos_z, decimals=1)
-                    smoothed_positions_x = savgol_filter(pos_x, window_length=wl, polyorder=2)
-                    smoothed_positions_x = round_vector(smoothed_positions_x, decimals=1)
-                    print("key", key, "Pos_X",pos_x)
-                    print("key", key, "Pos_X_smooth", smoothed_positions_x)
-                    smoothed_positions_y = savgol_filter(pos_y, window_length=wl, polyorder=2)
-                    smoothed_positions_y = round_vector(smoothed_positions_y, decimals=1)
 
 
-                    smoothed_positions_z = savgol_filter(pos_z, window_length=wl, polyorder=2)
-                    smoothed_positions_z = round_vector(smoothed_positions_z, decimals=1)
-                    #smoothed_positions_y = savgol_filter(pos_y, window_length=5, polyorder=2)
-                    # Calculate velocities using the smoothed positions
                     velocities_x = np.diff(pos_x) * fps         #To pass to meter/second
-                    velocities_x_smooth = np.diff(smoothed_positions_x) * fps
+
                     velocities_y = np.diff(pos_y) * fps
-                    velocities_y_smooth = np.diff(smoothed_positions_y) * fps
+
                     velocities_z = np.diff(pos_y) * fps
-                    velocities_z_smooth = np.diff(smoothed_positions_z) * fps
-                    update_point(objects_filtered, key, smoothed_positions_x[-1], smoothed_positions_y[-1], smoothed_positions_z[-1])
+
+                    #Filtro com poly = 0
+                    smtp_x01 = savgol_filter(pos_x, window_length=wl, polyorder=0)
+                    smtp_x01 = round_vector(smtp_x01, decimals=1)
+                    smtp_y01 = savgol_filter(pos_y, window_length=wl, polyorder=0)
+                    smtp_y01 = round_vector(smtp_y01, decimals=1)
+                    smtp_z01 = savgol_filter(pos_z, window_length=wl, polyorder=0)
+                    smtp_z01 = round_vector(smtp_z01, decimals=1)
+
+                    
+                    velocities_x_smooth_01 = np.diff(smtp_x01) * fps
+                    velocities_y_smooth_01 = np.diff(smtp_y01) * fps
+                    velocities_z_smooth_01 = np.diff(smtp_z01) * fps
+
+                    #Filtro com poly = 1 
+                    smtp_x02 = savgol_filter(pos_x, window_length=wl, polyorder=1)
+                    smtp_x02 = round_vector(smtp_x02, decimals=1)
+                    smtp_y02 = savgol_filter(pos_y, window_length=wl, polyorder=1)
+                    smtp_y02 = round_vector(smtp_y02, decimals=1)
+                    smtp_z02 = savgol_filter(pos_z, window_length=wl, polyorder=1)
+                    smtp_z02 = round_vector(smtp_z02, decimals=1)
+
+                    velocities_x_smooth_02 = np.diff(smtp_x02) * fps
+                    velocities_y_smooth_02 = np.diff(smtp_y02) * fps
+                    velocities_z_smooth_02 = np.diff(smtp_z02) * fps
+
+                    #Filtro com poly = 2
+                    smtp_x03 = savgol_filter(pos_x, window_length=wl, polyorder=2)
+                    smtp_x03 = round_vector(smtp_x03, decimals=1)
+                    smtp_y03 = savgol_filter(pos_y, window_length=wl, polyorder=2)
+                    smtp_y03 = round_vector(smtp_y03, decimals=1)
+                    smtp_z03 = savgol_filter(pos_z, window_length=wl, polyorder=2)
+                    smtp_z03 = round_vector(smtp_z03, decimals=1)
+
+                    velocities_x_smooth_03 = np.diff(smtp_x03) * fps
+                    velocities_y_smooth_03 = np.diff(smtp_y03) * fps
+                    velocities_z_smooth_03 = np.diff(smtp_z03) * fps
+                    #smtp_y01 = savgol_filter(pos_y, window_length=5, polyorder=2)
+                    # Calculate velocities using the smoothed positions
+
+                    
+                    update_point(objects_01, key, key + 0.1, smtp_x01[-1], smtp_y01[-1], smtp_z01[-1])
+                    update_point(objects_02, key, key + 0.2, smtp_x02[-1], smtp_y01[-1], smtp_z02[-1])
+                    update_point(objects_03, key, key + 0.3, smtp_x03[-1], smtp_y01[-1], smtp_z03[-1])
+
                     update_speed(objects, key, np.round(velocities_x[-1],1), round((velocities_y[-1]),1), round((velocities_z[-1]),1))
-                    update_speed(objects_filtered, key + 0.5, np.round(velocities_x_smooth[-1],1), round((velocities_y_smooth[-1]),1), round((velocities_z_smooth[-1]),1))
+
+                    update_speed(objects_01, key + 0.1, np.round(velocities_x_smooth_01[-1],1), round((velocities_y_smooth_01[-1]),1), round((velocities_z_smooth_01[-1]),1))
+                    update_speed(objects_02, key + 0.2, np.round(velocities_x_smooth_02[-1],1), round((velocities_y_smooth_02[-1]),1), round((velocities_z_smooth_02[-1]),1))
+                    update_speed(objects_03, key + 0.3, np.round(velocities_x_smooth_03[-1],1), round((velocities_y_smooth_03[-1]),1), round((velocities_z_smooth_03[-1]),1))
                 #if success_2:    
-                 #   cv2.circle(frame, (int(smoothed_positions_x[-1]), int(smoothed_positions_y[-1])), 5, (255, 0, 0), -1)
+                 #   cv2.circle(frame, (int(smtp_x01[-1]), int(smtp_y01[-1])), 5, (255, 0, 0), -1)
                 object_data = object_data2pub(objects, pub)
-                object_data = object_data2pub(objects_filtered, pub)
+                object_data = object_data2pub(objects_01, pub)
+                object_data = object_data2pub(objects_02, pub)
+                object_data = object_data2pub(objects_03, pub)
 
             cv2.putText(frame, f'FPS: {int(fps)}', (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
 

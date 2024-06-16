@@ -12,10 +12,10 @@ class Publisher:
         self.client.connect(self.broker, self.port, keepalive=60)
         
         # Open the CSV file and write the header if it doesn't exist
-        self.csv_file = open('results.csv', 'a', newline='')
+        self.csv_file = open('results_to_compare.csv', 'a', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         if self.csv_file.tell() == 0:
-            self.csv_writer.writerow(['timestamp', 'object type', 'object ID', 'confidence', 'x', 'y', 'z'])
+            self.csv_writer.writerow(['timestamp', 'object type', 'object ID', 'confidence', 'x', 'y', 'z', 'spd_X', 'spd_Y', 'spd_Z'])
 
     def publish(self, objects):
         for obj in objects:
@@ -26,15 +26,19 @@ class Publisher:
 
     def save_to_csv(self, obj):
         print(obj)
-        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S.%s.%2f')[:-3]
+        timestamp = obj.get('idf_time', 'unknown')
         object_class = obj.get('class_id', 'unknown')
         object_ID = obj.get('tracker_id', 'unknown')
+        speed_X = obj.get('speed_x', 'unknown')
+        speed_y = obj.get('speed_y', 'unknown')
+        speed_z = obj.get('speed_z', 'unknown')
         
         confidence = obj.get('confidence', {})
         x = obj.get('x', 'unknown')
         y = obj.get('y', 'unknown')
         z = obj.get('z', 'unknown')
-        self.csv_writer.writerow([timestamp, object_class, object_ID, confidence, x, y, z])
+        self.csv_writer.writerow([timestamp, object_class, object_ID, confidence, x, y, z, speed_X, speed_y, speed_z])
 
     def close_csv(self):
         self.csv_file.close()
