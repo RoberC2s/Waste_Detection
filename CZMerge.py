@@ -172,9 +172,11 @@ class ArUco:
 
 
 
-        parameters =  cv2.aruco.DetectorParameters()
-        Adetector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
-        corners, ids, rejected_img_points = Adetector.detectMarkers(gray)
+  # Create detector parameters
+        parameters = cv2.aruco.DetectorParameters_create()
+
+        corners, ids, rejectedImgPoints = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+
 
         if len(corners) < 3:
             print("There are missing some arucos")

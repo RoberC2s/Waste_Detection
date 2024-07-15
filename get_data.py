@@ -103,7 +103,66 @@ def update_point(detected_objects, tracker_id, new_key, new_x, new_y, new_z):
             obj.y = new_y
             obj.z = new_z
             break
-    
+
+class Kalman_filter:
+    def __init__(self):
+        # Initialize the Kalman Filter with 6 dynamic parameters and 3 measurement parameters
+        self.kf = cv2.KalmanFilter(6, 3)
+        
+        # Measurement matrix (maps the measured values to the state variables)
+        self.kf.measurementMatrix = np.array([[1, 0, 0, 0, 0, 0],
+                                              [0, 1, 0, 0, 0, 0],
+                                              [0, 0, 1, 0, 0, 0]], np.float32)
+        
+        # Transition matrix (describes the evolution of the state)
+        self.kf.transitionMatrix = np.array([[1, 0, 0, 1, 0, 0],
+                                             [0, 1, 0, 0, 1, 0],
+                                             [0, 0, 1, 0, 0, 1],
+                                             [0, 0, 0, 1, 0, 0],
+                                             [0, 0, 0, 0, 1, 0],
+                                             [0, 0, 0, 0, 0, 1]], np.float32)
+        
+        # Process noise covariance matrix
+        self.kf.processNoiseCov = np.eye(6, dtype=np.float32) * 0.07
+
+        # Measurement noise covariance matr
+
+        self.kf.measurementNoiseCov = np.array([[0.066767, -0.001617, 0.135032],
+                                                [-0.001617,  0.013646,  0.040181],
+                                                [0.135032,  0.040181,  0.499050]], dtype=np.float32)
+        #self.kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * 1.5
+
+    def correct(self, x, y, z):
+        # Create the measurement matrix from the input 3D point
+        measured = np.array([[np.float32(x)], [np.float32(y)], [np.float32(z)]])
+        
+        # Correct the state of the Kalman filter with the measured values
+        self.kf.correct(measured)
+        
+        # Extract the corrected position (x, y, z)
+        corrected = self.kf.statePost
+        x, y, z = corrected[0], corrected[1], corrected[2]
+        
+        return float(x), float(y), float(z)
+
+    def predict(self, x, y, z):
+        n = 1
+        measured = np.array([[np.float32(x)], [np.float32(y)], [np.float32(z)]])
+        c = self.kf.correct(measured)
+        # Predict the next state
+        for i in range(n):
+            
+            predicted = self.kf.predict()
+            print(i, ' e o predict é', predicted)
+
+        print("predicted = ", predicted)
+        # Extract the predicted position (x, y, z)
+        x, y, z = predicted[0], predicted[1], predicted[2]
+        
+        return float(c[0]), float(c[1]), float(c[2]), float(x), float(y), float(z)
+
+
+
 class ArUco:
     ARUCO_DICT = {
     "DICT_4X4_50": cv2.aruco.DICT_4X4_50,
@@ -165,16 +224,19 @@ class ArUco:
 
     def ref_estimation(self, frame, aruco_dict_type):
         font = cv2.FONT_HERSHEY_PLAIN
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         aruco_dict = cv2.aruco.getPredefinedDictionary(aruco_dict_type)
-        matrix_coefficients = np.array(((1406.57, 0, 980.817),(0,1407.67, 618.202),(0,0,1))) 
-        distortion_coefficients = np.array((-0.16597,0.01935,0,0,0.0035))
 
+        # Define camera matrix and distortion coefficients
+        matrix_coefficients = np.array(((1406.57, 0, 980.817), (0, 1407.67, 618.202), (0, 0, 1)))
+        distortion_coefficients = np.array((-0.16597, 0.01935, 0, 0, 0.0035))
 
+        # Create detector parameters
+        parameters = cv2.aruco.DetectorParameters_create()
 
-        parameters =  cv2.aruco.DetectorParameters()
-        Adetector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
-        corners, ids, rejected_img_points = Adetector.detectMarkers(gray)
+        corners, ids, rejectedImgPoints = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        
 
         if len(corners) < 3:
             print("There are missing some arucos")
@@ -222,7 +284,7 @@ class ArUco:
 
 
             # Draw reference frame
-            length = 50
+            length = 250
             end_point_x = tuple(np.round(mk_ctr + length * vx_2d).astype(int))
             end_point_y = tuple(np.round(mk_ctr + length * vy_2d).astype(int))
             #end_point_z = tuple(np.round(mk_ctr + length * normal_vector_2d).astype(int))
@@ -305,6 +367,7 @@ class ObjectDetection:
         detected_objects_to_fitler02 = []
 
         detected_objects_to_fitler03 = []
+        detected_objects_to_fitler04 = []
         for result in self.results:
             result.cpu().numpy()
             num_detected_objects = result.__len__()
@@ -326,7 +389,7 @@ class ObjectDetection:
                     M = cv2.moments(mask_pixels)
                     cX = int(M["m10"] / M["m00"])
                     cY = int(M["m01"] / M["m00"])
-                    #cv2.circle(frame, (cX, cY), 4, (0, 0, 255), -1)
+                    cv2.circle(frame, (cX, cY), 4, (255, 0,0), -1)
                     # Calculate object mean surface point XYZ
                     depth = 0
                     x = 0
@@ -382,7 +445,9 @@ class ObjectDetection:
                         detected_objects_to_fitler02.append(Object(x, y, z, confidence, class_id, tracker_id, timestamp))
 
                         detected_objects_to_fitler03.append(Object(x, y, z, confidence, class_id, tracker_id, timestamp))
-        return detected_objects, detected_objects_to_fitler01, detected_objects_to_fitler02, detected_objects_to_fitler03
+
+                        detected_objects_to_fitler04.append(Object(x, y, z, confidence, class_id, tracker_id, timestamp))
+        return detected_objects, detected_objects_to_fitler01, detected_objects_to_fitler02, detected_objects_to_fitler03, detected_objects_to_fitler04
     
     
 
@@ -523,7 +588,7 @@ class ZED:
         # Set configuration parameters
         self.init = sl.InitParameters()
 
-        self.init.depth_mode = sl.DEPTH_MODE.ULTRA
+        self.init.depth_mode = sl.DEPTH_MODE.PERFORMANCE
         self.init.camera_resolution = sl.RESOLUTION.HD1080
         self.init.coordinate_units = sl.UNIT.CENTIMETER
         #self.init.depth_stabilization = 50
@@ -585,7 +650,7 @@ if __name__ == "__main__":
     topic = "robotic_arm/object_detection"
 
     pub = Publisher(broker, port, topic)
-
+    KF = Kalman_filter()
     arucoDict = cv2.aruco.getPredefinedDictionary(aruco.ARUCO_DICT[aruco.aruco_type])
     while True:
         start_time = time()
@@ -600,7 +665,7 @@ if __name__ == "__main__":
                 transform_M = calculate_transform_matrix(frame_x_axis, frame_y_axis, frame_z_axis, center_3d)
 
                 #results = detector.model.track(frame, persist = True, conf = 0.75)      
-                objects, objects_01, objects_02, objects_03 = detector.detect(frame, zed_point_cloud, transform_M, track_history, track_history_pixels)
+                objects, objects_01, objects_02, objects_03, objects_04 = detector.detect(frame, zed_point_cloud, transform_M, track_history, track_history_pixels)
                 #detector.results  = results
                 '''
                 for result in results:
@@ -631,7 +696,7 @@ if __name__ == "__main__":
                 success_2 = False
                 speed_dict = defaultdict(lambda: {'speed_x': [], 'speed_y': []})
                 for key, points in track_history.items():
-                    if(len(points) < 6):                            #The amount of lectures used to calculate the speed,
+                    if(len(points) < 3):                            #The amount of lectures used to calculate the speed,
                         
                         break                                       #and after the average speed
                     if(len(points) < 15):
@@ -655,11 +720,20 @@ if __name__ == "__main__":
                     pos_z = round_vector(pos_z, decimals=1)
 
 
+                    #Kalman Filter 
+                    #nx, ny, nz = KF.correct(pos_x[-1], pos_y[-1], pos_z[-1])
+                    #print('nx', nx, 'ny, ', ny, ', nz ', nz)
+                    
+                    cx, cy, cz, px, py, pz = KF.predict(pos_x[-1], pos_y[-1], pos_z[-1])
+                        #px, py, pz = KF.correct(px, py, pz)
+
+                    print('in ', i, ' I have: ', px, py, pz)
+                    
                     velocities_x = np.diff(pos_x) * fps         #To pass to meter/second
 
                     velocities_y = np.diff(pos_y) * fps
 
-                    velocities_z = np.diff(pos_y) * fps
+                    velocities_z = np.diff(pos_z) * fps
 
                     #Filtro com poly = 0
                     smtp_x01 = savgol_filter(pos_x, window_length=wl, polyorder=0)
@@ -702,21 +776,24 @@ if __name__ == "__main__":
 
                     
                     update_point(objects_01, key, key + 0.1, smtp_x01[-1], smtp_y01[-1], smtp_z01[-1])
-                    update_point(objects_02, key, key + 0.2, smtp_x02[-1], smtp_y01[-1], smtp_z02[-1])
-                    update_point(objects_03, key, key + 0.3, smtp_x03[-1], smtp_y01[-1], smtp_z03[-1])
-
+                    update_point(objects_02, key, key + 0.2, smtp_x02[-1], smtp_y02[-1], smtp_z02[-1])
+                    update_point(objects_03, key, key + 0.3, smtp_x03[-1], smtp_y03[-1], smtp_z03[-1])
+                    update_point(objects_04, key, key + 0.4, np.round(cx, 1), np.round(cy,1), np.round(cz,1))
+                    
                     update_speed(objects, key, np.round(velocities_x[-1],1), round((velocities_y[-1]),1), round((velocities_z[-1]),1))
 
                     update_speed(objects_01, key + 0.1, np.round(velocities_x_smooth_01[-1],1), round((velocities_y_smooth_01[-1]),1), round((velocities_z_smooth_01[-1]),1))
                     update_speed(objects_02, key + 0.2, np.round(velocities_x_smooth_02[-1],1), round((velocities_y_smooth_02[-1]),1), round((velocities_z_smooth_02[-1]),1))
                     update_speed(objects_03, key + 0.3, np.round(velocities_x_smooth_03[-1],1), round((velocities_y_smooth_03[-1]),1), round((velocities_z_smooth_03[-1]),1))
+                    update_speed(objects_04, key + 0.4, px, py, pz)
+                                
                 #if success_2:    
                  #   cv2.circle(frame, (int(smtp_x01[-1]), int(smtp_y01[-1])), 5, (255, 0, 0), -1)
                 object_data = object_data2pub(objects, pub)
                 object_data = object_data2pub(objects_01, pub)
                 object_data = object_data2pub(objects_02, pub)
                 object_data = object_data2pub(objects_03, pub)
-
+                object_data = object_data2pub(objects_04, pub)
             cv2.putText(frame, f'FPS: {int(fps)}', (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
 
             cv2.imshow('YOLOv8 Detection', frame)
